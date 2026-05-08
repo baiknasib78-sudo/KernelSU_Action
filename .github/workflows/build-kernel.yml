@@ -203,10 +203,8 @@ jobs:
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # Menggunakan skrip setup dari branch dev organisasi resmi KernelSU-Next
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s dev
         
-        # FIX: Masuk ke folder KernelSU-Next untuk ambil KSU_VERSION
         if [ -d "KernelSU-Next" ]; then
             KSU_VERSION=$(cd KernelSU-Next && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
             echo "UPLOADNAME=-KernelSU_Next_$KSU_VERSION" >> $GITHUB_ENV
@@ -219,6 +217,13 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
+        # FIX: Sinkronisasi nama folder KernelSU-Next di Makefile drivers agar tidak error build
+        if [ -d "drivers/KernelSU-Next" ]; then
+            sed -i '/obj-y += kernelsu\//d' drivers/Makefile
+            sed -i '/obj-y += KernelSU-Next\//d' drivers/Makefile
+            echo "obj-y += KernelSU-Next/" >> drivers/Makefile
+        fi
+
         # Pengecekan status APPLY_KSU_PATCH
         if [ "${{ env.APPLY_KSU_PATCH }}" = "true" ]; then
             if [ -f "$GITHUB_WORKSPACE/patches/patches.sh" ]; then
@@ -270,7 +275,6 @@ jobs:
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
         
-        # Integrasi KSU_EXPECTED_HASH jika ada di config.env
         if [ ! -z "${{ env.KSU_EXPECTED_SIZE }}" ] && [ ! -z "${{ env.KSU_EXPECTED_HASH }}" ]; then
           export KSU_EXPECTED_SIZE=${{ env.KSU_EXPECTED_SIZE }}
           export KSU_EXPECTED_HASH=${{ env.KSU_EXPECTED_HASH }}
