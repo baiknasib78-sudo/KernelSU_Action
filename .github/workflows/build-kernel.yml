@@ -60,7 +60,7 @@ jobs:
         echo "BUILD_TIME=$(TZ=Asia/Jakarta date "+%Y%m%d%H%M")" >> $GITHUB_ENV
         echo "DEVICE=$(echo ${{ env.KERNEL_CONFIG }} | sed 's!vendor/!!;s/_defconfig//;s/_user//;s/-perf//')" >> $GITHUB_ENV
         sudo apt-get update
-        sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3 -y
+        sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush list-dev schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3 -y
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
     - name: Download Toolchains
@@ -77,28 +77,18 @@ jobs:
             tar -C clang-aosp/ -zxf clang.tar.gz
         fi
 
-        # 2. GCC 64
-        mkdir -p gcc-64
+        # 2. GCC 64 & 32
+        [ "${{ env.ENABLE_GCC_ARM64 }}" = "true" ] && mkdir -p gcc-64
+        [ "${{ env.ENABLE_GCC_ARM32 }}" = "true" ] && mkdir -p gcc-32
+        
         if [ "${{ env.ENABLE_GCC_ARM64 }}" = "true" ]; then
-            if [ "${{ env.USE_CUSTOM_GCC_64 }}" = "true" ]; then
-                wget -O gcc64.bin "${{ env.CUSTOM_GCC_64_SOURCE }}"
-                tar -C gcc-64/ -xf gcc64.bin || unzip gcc64.bin -d gcc-64/
-            else
-                wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc64.tar.gz
-                tar -C gcc-64/ -zxf gcc64.tar.gz
-            fi
+            wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc64.tar.gz
+            tar -C gcc-64/ -zxf gcc64.tar.gz
         fi
-
-        # 3. GCC 32
+        
         if [ "${{ env.ENABLE_GCC_ARM32 }}" = "true" ]; then
-            mkdir -p gcc-32
-            if [ "${{ env.USE_CUSTOM_GCC_32 }}" = "true" ]; then
-                wget -O gcc32.bin "${{ env.CUSTOM_GCC_32_SOURCE }}"
-                tar -C gcc-32/ -xf gcc32.bin || unzip gcc32.bin -d gcc-32/
-            else
-                wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc32.tar.gz
-                tar -C gcc-32/ -zxf gcc32.tar.gz
-            fi
+            wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc32.tar.gz
+            tar -C gcc-32/ -zxf gcc32.tar.gz
         fi
 
     - name: Download Kernel Source
@@ -119,9 +109,9 @@ jobs:
     - name: Setup Configuration & Fixes
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        
         [ -d "KernelSU-Next" ] && KSU_PATH="KernelSU-Next" || KSU_PATH="drivers/kernelsu"
-
+        
+        # Fixes
         find $KSU_PATH -type f -exec grep -l "linux/compiler_types.h" {} + | xargs sed -i 's/linux\/compiler_types.h/linux\/compiler.h/g' || true
         find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror//g' || true
         
@@ -141,48 +131,32 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # Lokasi BIN secara dinamis
+        # Lokasi BIN
         CLANG_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/clang-aosp -type d -name "bin" | head -n 1)
         GCC64_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-64 -type d -name "bin" | head -n 1)
         GCC32_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-32 -type d -name "bin" | head -n 1)
         
-        # Deteksi prefix GCC secara akurat
-        PREFIX64=$(ls $GCC64_BIN | grep -m1 "aarch64.*-gcc$" | sed 's/gcc$//')
-        PREFIX32=$(ls $GCC32_BIN | grep -m1 "arm.*-gcc$" | sed 's/gcc$//')
-
-        # STRATEGI PATH: Taruh /usr/bin di depan agar host tools (fixdep) menggunakan assembler sistem
-        # Kemudian taruh toolchain Android setelahnya agar ccache/clang tetap terbaca
+        # Gabungkan PATH: /usr/bin paling depan untuk fixdep (host), sisanya mengikuti
         export PATH="/usr/bin:/bin:$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
-
-        if [ ! -z "${{ env.KSU_EXPECTED_SIZE }}" ]; then
-            export KSU_EXPECTED_SIZE=${{ env.KSU_EXPECTED_SIZE }}
-            export KSU_EXPECTED_HASH=${{ env.KSU_EXPECTED_HASH }}
-        fi
-
-        MAKE_ARGS=(
-            O=out
-            ARCH=${{ env.ARCH }}
-            CC="ccache clang"
-            HOSTCC="gcc"
-            HOSTCXX="g++"
-            LD=ld.lld
-            AR=llvm-ar
-            NM=llvm-nm
-            OBJCOPY=llvm-objcopy
-            OBJDUMP=llvm-objdump
-            STRIP=llvm-strip
-            CROSS_COMPILE=$PREFIX64
-            CROSS_COMPILE_ARM32=$PREFIX32
-            KCFLAGS="-Wno-implicit-function-declaration -Wno-int-conversion -Wno-unknown-warning-option -Wno-unused-function"
-        )
+        
+        # Variabel untuk mempermudah 'make'
+        ARGS="ARCH=${{ env.ARCH }} \
+              O=out \
+              CC=\"ccache clang\" \
+              HOSTCC=gcc \
+              HOSTCXX=g++ \
+              CROSS_COMPILE=aarch64-linux-android- \
+              CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+              LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip"
 
         # 1. Defconfig
-        make "${MAKE_ARGS[@]}" ${{ env.KERNEL_CONFIG }}
+        make $ARGS ${{ env.KERNEL_CONFIG }}
 
-        # 2. Build Utama
-        make -j$(nproc --all) "${MAKE_ARGS[@]}" \
-            ${{ env.CUSTOM_CMDS }} \
-            ${{ env.EXTRA_CMDS }}
+        # 2. Main Build
+        make -j$(nproc --all) $ARGS \
+             KCFLAGS="-Wno-implicit-function-declaration -Wno-int-conversion" \
+             ${{ env.CUSTOM_CMDS }} \
+             ${{ env.EXTRA_CMDS }}
 
     - name: Check Output & Prepare Artifacts
       run: |
@@ -202,4 +176,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: Kernel-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
-        path: kernel_workspace/AK3/*
+        path: |
+          kernel_workspace/AK3/*
+          kernel_workspace/android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }}
