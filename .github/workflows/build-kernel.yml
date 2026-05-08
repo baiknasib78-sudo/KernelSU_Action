@@ -32,9 +32,9 @@ jobs:
 
         for CONFIG in "${CONFIG_LIST[@]}"; do
             if [[ "$CONFIG" == "EXTRA_CMDS" || "$CONFIG" == "CUSTOM_CMDS" ]]; then
-                echo "$CONFIG=$(grep -w "$CONFIG" "$CONFIG_ENV" | head -n 1 | cut -d ":" -f 2)" >> $GITHUB_ENV
+                echo "$CONFIG=$(grep -w "$CONFIG" "$CONFIG_ENV" | head -n 1 | cut -d ":" -f 2-)" >> $GITHUB_ENV
             else
-                echo "$CONFIG=$(grep -w "$CONFIG" "$CONFIG_ENV" | head -n 1 | cut -d "=" -f 2)" >> $GITHUB_ENV
+                echo "$CONFIG=$(grep -w "$CONFIG" "$CONFIG_ENV" | head -n 1 | cut -d "=" -f 2-)" >> $GITHUB_ENV
             fi
         done
 
@@ -142,7 +142,6 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s dev
-        # Menentukan direktori KSU untuk keperluan UPLOADNAME saja
         if [ -d "KernelSU-Next" ]; then KSU_DIR="KernelSU-Next"; else KSU_DIR="drivers/kernelsu"; fi
         KSU_VERSION=$(cd $KSU_DIR && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
         echo "UPLOADNAME=-KernelSU_Next_$KSU_VERSION" >> $GITHUB_ENV
@@ -151,7 +150,7 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 0. Deteksi folder KSU secara otomatis (KernelSU-Next atau drivers/kernelsu)
+        # 0. Deteksi folder KSU secara otomatis
         if [ -d "KernelSU-Next" ]; then
             KSU_PATH="KernelSU-Next"
         elif [ -d "drivers/kernelsu" ]; then
@@ -162,7 +161,7 @@ jobs:
         fi
         echo "KSU found in: $KSU_PATH"
 
-        # 1. FIX: compiler_types.h Not Found (Redirect ke compiler.h untuk Kernel < 4.14)
+        # 1. FIX: compiler_types.h Not Found (Untuk Kernel < 4.14)
         find $KSU_PATH -type f -exec grep -l "linux/compiler_types.h" {} + | xargs sed -i 's/linux\/compiler_types.h/linux\/compiler.h/g' || true
 
         # 2. FIX: syscall_fn_t untuk Rolex (Kernel 4.9)
@@ -177,17 +176,25 @@ jobs:
         # 3. FIX: PR_SET_VMA redefinition
         find $KSU_PATH -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/PR_SET_VMA/PR_SET_VMA_KSU/g' || true
 
-        # 4. Defconfig adjustments
+        # 4. Defconfig adjustments (Anti-Tabrakan)
         CONF="arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}"
-        [ "${{ env.ENABLE_KERNELSU }}" = "true" ] && echo "CONFIG_KSU=y" >> $CONF
+        set_config() {
+            sed -i "/$1/d" $CONF
+            echo "$1=$2" >> $CONF
+        }
+
+        [ "${{ env.ENABLE_KERNELSU }}" = "true" ] && set_config "CONFIG_KSU" "y"
         if [ "${{ env.ADD_KPROBES_CONFIG }}" = "true" ]; then
-            echo "CONFIG_MODULES=y" >> $CONF
-            echo "CONFIG_KPROBES=y" >> $CONF
-            echo "CONFIG_HAVE_KPROBES=y" >> $CONF
-            echo "CONFIG_KPROBE_EVENTS=y" >> $CONF
+            set_config "CONFIG_MODULES" "y"
+            set_config "CONFIG_KPROBES" "y"
+            set_config "CONFIG_HAVE_KPROBES" "y"
+            set_config "CONFIG_KPROBE_EVENTS" "y"
         fi
-        [ "${{ env.ADD_OVERLAYFS_CONFIG }}" = "true" ] && echo "CONFIG_OVERLAY_FS=y" >> $CONF
-        [ "${{ env.DISABLE_CC_WERROR }}" = "true" ] && echo "CONFIG_CC_WERROR=n" >> $CONF
+        [ "${{ env.ADD_OVERLAYFS_CONFIG }}" = "true" ] && set_config "CONFIG_OVERLAY_FS" "y"
+        [ "${{ env.DISABLE_CC_WERROR }}" = "true" ] && set_config "CONFIG_CC_WERROR" "n"
+
+        # Matikan WERROR global supaya tidak gampang error karena warning
+        sed -i 's/-Werror//g' Makefile
 
     - name: Setup ccache
       if: env.ENABLE_CCACHE == 'true'
