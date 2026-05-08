@@ -122,7 +122,6 @@ jobs:
         
         [ -d "KernelSU-Next" ] && KSU_PATH="KernelSU-Next" || KSU_PATH="drivers/kernelsu"
 
-        # Fixes sepele tapi krusial
         find $KSU_PATH -type f -exec grep -l "linux/compiler_types.h" {} + | xargs sed -i 's/linux\/compiler_types.h/linux\/compiler.h/g' || true
         find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror//g' || true
         
@@ -142,37 +141,43 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
+        # Lokasi BIN
         CLANG_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/clang-aosp -type d -name "bin" | head -n 1)
         GCC64_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-64 -type d -name "bin" | head -n 1)
         GCC32_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-32 -type d -name "bin" | head -n 1)
         
-        # Deteksi prefix secara dinamis
+        # Tambahkan ke PATH sistem secara sementara agar ccache bisa melihat clang
+        export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+        
+        # Deteksi prefix GCC secara lebih akurat
         PREFIX64=$(ls $GCC64_BIN | grep -m1 "aarch64.*-gcc$" | sed 's/gcc$//')
         PREFIX32=$(ls $GCC32_BIN | grep -m1 "arm.*-gcc$" | sed 's/gcc$//')
 
-        MAKE_ARGS=(
-            O=out
-            ARCH=${{ env.ARCH }}
-            CC="ccache clang"
-            HOSTCC="gcc"
-            HOSTCXX="g++"
-            LD=ld.lld
-            AR=llvm-ar
-            NM=llvm-nm
-            OBJCOPY=llvm-objcopy
-            OBJDUMP=llvm-objdump
-            STRIP=llvm-strip
-            CROSS_COMPILE=$GCC64_BIN/$PREFIX64
-            CROSS_COMPILE_ARM32=$GCC32_BIN/$PREFIX32
-            KCFLAGS="-Wno-implicit-function-declaration -Wno-int-conversion -Wno-unknown-warning-option"
-        )
+        if [ ! -z "${{ env.KSU_EXPECTED_SIZE }}" ]; then
+            export KSU_EXPECTED_SIZE=${{ env.KSU_EXPECTED_SIZE }}
+            export KSU_EXPECTED_HASH=${{ env.KSU_EXPECTED_HASH }}
+        fi
 
-        # Build dengan PATH Sandwich (Host tools pakai /usr/bin dulu)
-        make "${MAKE_ARGS[@]}" ${{ env.KERNEL_CONFIG }} \
-            PATH="/usr/bin:/bin:$CLANG_BIN:$GCC64_BIN:$GCC32_BIN"
+        # Defconfig
+        make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }} \
+            CC=clang \
+            CROSS_COMPILE=$PREFIX64 \
+            CROSS_COMPILE_ARM32=$PREFIX32
 
-        make -j$(nproc --all) "${MAKE_ARGS[@]}" \
-            PATH="/usr/bin:/bin:$CLANG_BIN:$GCC64_BIN:$GCC32_BIN" \
+        # Build Utama - Gunakan jalur absolut untuk CC jika ccache masih rewel
+        make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} \
+            CC="ccache clang" \
+            HOSTCC="gcc" \
+            HOSTCXX="g++" \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=$PREFIX64 \
+            CROSS_COMPILE_ARM32=$PREFIX32 \
+            KCFLAGS="-Wno-implicit-function-declaration -Wno-int-conversion -Wno-unknown-warning-option -Wno-unused-function" \
             ${{ env.CUSTOM_CMDS }} \
             ${{ env.EXTRA_CMDS }}
 
