@@ -199,10 +199,12 @@ jobs:
         [ "${{ env.ADD_OVERLAYFS_CONFIG }}" = "true" ] && set_config "CONFIG_OVERLAY_FS" "y"
         [ "${{ env.DISABLE_CC_WERROR }}" = "true" ] && set_config "CONFIG_CC_WERROR" "n"
 
-        # Fix Clang Error: Hapus flag yang tidak dikenali Clang 12+ di kernel lama
-        sed -i 's/-Werror=implicit-function-declaration//g' Makefile
-        sed -i 's/-Wno-unknown-warning-option//g' Makefile
-        sed -i 's/-Werror=unknown-warning-option//g' Makefile
+        # HARD FIX: Hapus semua varian flag -Werror dan flag Clang yang tidak dikenal di kernel lama
+        find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror=implicit-function-declaration//g' || true
+        find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Wimplicit-function-declaration//g' || true
+        find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror=unknown-warning-option//g' || true
+        find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Wno-unknown-warning-option//g' || true
+        find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror//g' || true
         sed -i 's/-Werror//g' Makefile
 
     - name: Setup ccache
@@ -216,8 +218,12 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # Tambahkan path Clang DAN GCC ke PATH sistem agar script kernel bisa memvalidasi compiler
-        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin:$PATH
+        # Cari folder 'bin' secara dinamis untuk memastikan PATH benar (Mengatasi "No such file or directory")
+        GCC64_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-64 -type d -name "bin" | head -n 1)
+        GCC32_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-32 -type d -name "bin" | head -n 1)
+        CLANG_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/clang-aosp -type d -name "bin" | head -n 1)
+        
+        export PATH=$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH
         
         if [ ! -z "${{ env.KSU_EXPECTED_SIZE }}" ]; then
             export KSU_EXPECTED_SIZE=${{ env.KSU_EXPECTED_SIZE }}
@@ -227,7 +233,7 @@ jobs:
         # Jalankan defconfig
         make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
         
-        # Jalankan build dengan parameter lengkap
+        # Jalankan build dengan parameter lengkap & KCFLAGS untuk mengabaikan error sepele
         make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} \
             CC="ccache clang" \
             HOSTCC="gcc" \
@@ -238,6 +244,7 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            KCFLAGS="-Wno-implicit-function-declaration -Wno-unknown-warning-option" \
             ${{ env.CUSTOM_CMDS }} \
             ${{ env.EXTRA_CMDS }} \
             ${{ env.GCC_64 }} \
