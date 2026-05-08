@@ -60,7 +60,8 @@ jobs:
         echo "BUILD_TIME=$(TZ=Asia/Jakarta date "+%Y%m%d%H%M")" >> $GITHUB_ENV
         echo "DEVICE=$(echo ${{ env.KERNEL_CONFIG }} | sed 's!vendor/!!;s/_defconfig//;s/_user//;s/-perf//')" >> $GITHUB_ENV
         sudo apt-get update
-        sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush list-dev schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3 -y
+        # Typo 'list-dev' dihapus dari baris di bawah ini
+        sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3 -y
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
     - name: Download Toolchains
@@ -111,9 +112,18 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         [ -d "KernelSU-Next" ] && KSU_PATH="KernelSU-Next" || KSU_PATH="drivers/kernelsu"
         
-        # Fixes
+        # KSU Fixes untuk Kernel lama (termasuk Rolex)
         find $KSU_PATH -type f -exec grep -l "linux/compiler_types.h" {} + | xargs sed -i 's/linux\/compiler_types.h/linux\/compiler.h/g' || true
         find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror//g' || true
+        
+        # Fix syscall_fn_t khusus Rolex/Kernel 4.9
+        HOOK_FILE=$(find $KSU_PATH -name "syscall_hook.h")
+        if [ ! -z "$HOOK_FILE" ]; then
+            sed -i '/typedef long (*syscall_fn_t)/d' $HOOK_FILE
+            sed -i '/linux\/ptrace.h/d' $HOOK_FILE
+            sed -i '1i #include <linux/ptrace.h>' $HOOK_FILE
+            sed -i '2i typedef long (*syscall_fn_t)(const struct pt_regs *);' $HOOK_FILE
+        fi
         
         CONF="arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}"
         sed -i '/CONFIG_CC_STACKPROTECTOR/d' $CONF
@@ -131,28 +141,22 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # Lokasi BIN
         CLANG_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/clang-aosp -type d -name "bin" | head -n 1)
         GCC64_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-64 -type d -name "bin" | head -n 1)
         GCC32_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-32 -type d -name "bin" | head -n 1)
         
-        # Gabungkan PATH: /usr/bin paling depan untuk fixdep (host), sisanya mengikuti
         export PATH="/usr/bin:/bin:$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
         
-        # Variabel untuk mempermudah 'make'
+        # CROSS_COMPILE sudah dihapus dari sini agar mengambil langsung dari CUSTOM_CMDS di config.env
         ARGS="ARCH=${{ env.ARCH }} \
               O=out \
               CC=\"ccache clang\" \
               HOSTCC=gcc \
               HOSTCXX=g++ \
-              CROSS_COMPILE=aarch64-linux-android- \
-              CROSS_COMPILE_ARM32=arm-linux-androideabi- \
               LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip"
 
-        # 1. Defconfig
         make $ARGS ${{ env.KERNEL_CONFIG }}
 
-        # 2. Main Build
         make -j$(nproc --all) $ARGS \
              KCFLAGS="-Wno-implicit-function-declaration -Wno-int-conversion" \
              ${{ env.CUSTOM_CMDS }} \
