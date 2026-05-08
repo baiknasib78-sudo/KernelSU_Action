@@ -60,7 +60,6 @@ jobs:
         echo "BUILD_TIME=$(TZ=Asia/Jakarta date "+%Y%m%d%H%M")" >> $GITHUB_ENV
         echo "DEVICE=$(echo ${{ env.KERNEL_CONFIG }} | sed 's!vendor/!!;s/_defconfig//;s/_user//;s/-perf//')" >> $GITHUB_ENV
         sudo apt-get update
-        # Typo 'list-dev' dihapus dari baris di bawah ini
         sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3 -y
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
@@ -147,17 +146,22 @@ jobs:
         
         export PATH="/usr/bin:/bin:$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
         
-        # CROSS_COMPILE sudah dihapus dari sini agar mengambil langsung dari CUSTOM_CMDS di config.env
-        ARGS="ARCH=${{ env.ARCH }} \
-              O=out \
-              CC=\"ccache clang\" \
-              HOSTCC=gcc \
-              HOSTCXX=g++ \
-              LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip"
+        # Eksekusi make defconfig secara inline tanpa variabel penampung
+        make ARCH=${{ env.ARCH }} \
+             O=out \
+             CC="ccache clang" \
+             HOSTCC=gcc \
+             HOSTCXX=g++ \
+             LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+             ${{ env.KERNEL_CONFIG }}
 
-        make $ARGS ${{ env.KERNEL_CONFIG }}
-
-        make -j$(nproc --all) $ARGS \
+        # Eksekusi make build utama secara inline
+        make -j$(nproc --all) ARCH=${{ env.ARCH }} \
+             O=out \
+             CC="ccache clang" \
+             HOSTCC=gcc \
+             HOSTCXX=g++ \
+             LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
              KCFLAGS="-Wno-implicit-function-declaration -Wno-int-conversion" \
              ${{ env.CUSTOM_CMDS }} \
              ${{ env.EXTRA_CMDS }}
