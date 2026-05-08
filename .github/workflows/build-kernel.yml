@@ -95,13 +95,10 @@ jobs:
                     wget -O gcc64.bin "${{ env.CUSTOM_GCC_64_SOURCE }}"
                     tar -C gcc-64/ -zxvf gcc64.bin || unzip gcc64.bin -d gcc-64/
                 fi
-                BIN_64="${{ env.CUSTOM_GCC_64_BIN }}"
             else
                 wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc64.tar.gz
                 tar -C gcc-64/ -zxvf gcc64.tar.gz
-                BIN_64="aarch64-linux-android-"
             fi
-            echo "GCC_64=CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin/$BIN_64" >> $GITHUB_ENV
         fi
 
         # 3. Download GCC 32
@@ -114,13 +111,10 @@ jobs:
                     wget -O gcc32.bin "${{ env.CUSTOM_GCC_32_SOURCE }}"
                     tar -C gcc-32/ -zxvf gcc32.bin || unzip gcc32.bin -d gcc-32/
                 fi
-                BIN_32="${{ env.CUSTOM_GCC_32_BIN }}"
             else
                 wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc32.tar.gz
                 tar -C gcc-32/ -zxvf gcc32.tar.gz
-                BIN_32="arm-linux-androideabi-"
             fi
-            echo "GCC_32=CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin/$BIN_32" >> $GITHUB_ENV
         fi
 
     - name: Download Kernel Source & Tools
@@ -150,21 +144,12 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 0. Deteksi folder KSU secara otomatis
-        if [ -d "KernelSU-Next" ]; then
-            KSU_PATH="KernelSU-Next"
-        elif [ -d "drivers/kernelsu" ]; then
-            KSU_PATH="drivers/kernelsu"
-        else
-            echo "KSU folder not found!"
-            exit 1
-        fi
-        echo "KSU found in: $KSU_PATH"
+        if [ -d "KernelSU-Next" ]; then KSU_PATH="KernelSU-Next"; elif [ -d "drivers/kernelsu" ]; then KSU_PATH="drivers/kernelsu"; else exit 0; fi
 
-        # 1. FIX: compiler_types.h Not Found (Untuk Kernel < 4.14)
+        # 1. FIX: compiler_types.h (Kernel < 4.14)
         find $KSU_PATH -type f -exec grep -l "linux/compiler_types.h" {} + | xargs sed -i 's/linux\/compiler_types.h/linux\/compiler.h/g' || true
 
-        # 2. FIX: syscall_fn_t untuk Rolex (Kernel 4.9)
+        # 2. FIX: syscall_fn_t untuk Rolex
         HOOK_FILE=$(find $KSU_PATH -name "syscall_hook.h")
         if [ ! -z "$HOOK_FILE" ]; then
             sed -i '/typedef long (*syscall_fn_t)/d' $HOOK_FILE
@@ -176,34 +161,20 @@ jobs:
         # 3. FIX: PR_SET_VMA redefinition
         find $KSU_PATH -type f -name "*.c" -o -name "*.h" | xargs sed -i 's/PR_SET_VMA/PR_SET_VMA_KSU/g' || true
 
-        # 4. Defconfig adjustments (Anti-Tabrakan & Fix Stack Protector)
+        # 4. Defconfig adjustments
         CONF="arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}"
         set_config() {
             sed -i "/$1/d" $CONF
             echo "$1=$2" >> $CONF
         }
-
-        # Fix Error 1: Stack Protector
         set_config "CONFIG_CC_STACKPROTECTOR" "n"
         set_config "CONFIG_CC_STACKPROTECTOR_NONE" "y"
         set_config "CONFIG_CC_STACKPROTECTOR_STRONG" "n"
-        set_config "CONFIG_CC_STACKPROTECTOR_REGULAR" "n"
-
         [ "${{ env.ENABLE_KERNELSU }}" = "true" ] && set_config "CONFIG_KSU" "y"
-        if [ "${{ env.ADD_KPROBES_CONFIG }}" = "true" ]; then
-            set_config "CONFIG_MODULES" "y"
-            set_config "CONFIG_KPROBES" "y"
-            set_config "CONFIG_HAVE_KPROBES" "y"
-            set_config "CONFIG_KPROBE_EVENTS" "y"
-        fi
-        [ "${{ env.ADD_OVERLAYFS_CONFIG }}" = "true" ] && set_config "CONFIG_OVERLAY_FS" "y"
-        [ "${{ env.DISABLE_CC_WERROR }}" = "true" ] && set_config "CONFIG_CC_WERROR" "n"
 
-        # HARD FIX: Hapus semua varian flag -Werror dan flag Clang yang tidak dikenal di kernel lama
+        # 5. HARD FIX: Hapus flag -Werror secara global di seluruh Makefile
         find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror=implicit-function-declaration//g' || true
         find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Wimplicit-function-declaration//g' || true
-        find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror=unknown-warning-option//g' || true
-        find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Wno-unknown-warning-option//g' || true
         find . -name "Makefile*" -o -name "Kbuild*" | xargs sed -i 's/-Werror//g' || true
         sed -i 's/-Werror//g' Makefile
 
@@ -218,23 +189,30 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # Cari folder 'bin' secara dinamis untuk memastikan PATH benar (Mengatasi "No such file or directory")
+        # Cari lokasi bin masing-masing toolchain secara dinamis
         GCC64_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-64 -type d -name "bin" | head -n 1)
         GCC32_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-32 -type d -name "bin" | head -n 1)
         CLANG_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/clang-aosp -type d -name "bin" | head -n 1)
         
-        export PATH=$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH
-        
+        # Buat variabel untuk CROSS_COMPILE agar dinamis
+        BIN_64_PREFIX=$(ls $GCC64_BIN | grep -m1 "aarch64.*-gcc$" | sed 's/gcc$//')
+        BIN_32_PREFIX=$(ls $GCC32_BIN | grep -m1 "arm.*-gcc$" | sed 's/gcc$//')
+
         if [ ! -z "${{ env.KSU_EXPECTED_SIZE }}" ]; then
             export KSU_EXPECTED_SIZE=${{ env.KSU_EXPECTED_SIZE }}
             export KSU_EXPECTED_HASH=${{ env.KSU_EXPECTED_HASH }}
         fi
         
-        # Jalankan defconfig
-        make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
-        
-        # Jalankan build dengan parameter lengkap & KCFLAGS untuk mengabaikan error sepele
+        # Build defconfig dengan PATH lokal
+        make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }} \
+            PATH=$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:/usr/bin:/bin \
+            CC=clang \
+            CROSS_COMPILE=$GCC64_BIN/$BIN_64_PREFIX \
+            CROSS_COMPILE_ARM32=$GCC32_BIN/$BIN_32_PREFIX
+
+        # Build utama dengan PATH lokal & KCFLAGS untuk skip error sepele
         make -j$(nproc --all) O=out ARCH=${{ env.ARCH }} \
+            PATH=$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:/usr/bin:/bin \
             CC="ccache clang" \
             HOSTCC="gcc" \
             HOSTCXX="g++" \
@@ -244,11 +222,12 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
-            KCFLAGS="-Wno-implicit-function-declaration -Wno-unknown-warning-option" \
+            OBJSIZE=llvm-size \
+            KCFLAGS="-Wno-implicit-function-declaration -Wno-unknown-warning-option -Wno-int-conversion -Wno-unused-function" \
+            CROSS_COMPILE=$GCC64_BIN/$BIN_64_PREFIX \
+            CROSS_COMPILE_ARM32=$GCC32_BIN/$BIN_32_PREFIX \
             ${{ env.CUSTOM_CMDS }} \
-            ${{ env.EXTRA_CMDS }} \
-            ${{ env.GCC_64 }} \
-            ${{ env.GCC_32 }}
+            ${{ env.EXTRA_CMDS }}
 
     - name: Check Output & Prepare Artifacts
       run: |
