@@ -144,23 +144,29 @@ jobs:
         GCC64_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-64 -type d -name "bin" | head -n 1)
         GCC32_BIN=$(find $GITHUB_WORKSPACE/kernel_workspace/gcc-32 -type d -name "bin" | head -n 1)
         
-        export PATH="/usr/bin:/bin:$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+        export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:/usr/bin:/bin:$PATH"
         
-        # Eksekusi make defconfig secara inline tanpa variabel penampung
+        # Definisikan path absolut agar ccache dan make tidak bingung
+        CC_PATH="$CLANG_BIN/clang"
+        CROSS_32="$GCC32_BIN/arm-linux-androideabi-"
+        
+        # 1. Defconfig
         make ARCH=${{ env.ARCH }} \
              O=out \
-             CC="ccache clang" \
+             CC="ccache $CC_PATH" \
              HOSTCC=gcc \
              HOSTCXX=g++ \
+             CROSS_COMPILE_ARM32=$CROSS_32 \
              LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
              ${{ env.KERNEL_CONFIG }}
 
-        # Eksekusi make build utama secara inline
+        # 2. Main Build
         make -j$(nproc --all) ARCH=${{ env.ARCH }} \
              O=out \
-             CC="ccache clang" \
+             CC="ccache $CC_PATH" \
              HOSTCC=gcc \
              HOSTCXX=g++ \
+             CROSS_COMPILE_ARM32=$CROSS_32 \
              LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
              KCFLAGS="-Wno-implicit-function-declaration -Wno-int-conversion" \
              ${{ env.CUSTOM_CMDS }} \
