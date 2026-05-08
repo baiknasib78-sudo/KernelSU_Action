@@ -29,6 +29,7 @@ jobs:
             ENABLE_CCACHE NEED_DTBO BUILD_BOOT_IMG SOURCE_BOOT_IMAGE
             KSU_EXPECTED_SIZE KSU_EXPECTED_HASH REMOVE_UNUSED_PACKAGES
         )
+
         for CONFIG in "${CONFIG_LIST[@]}"; do
             if [[ "$CONFIG" == "EXTRA_CMDS" || "$CONFIG" == "CUSTOM_CMDS" ]]; then
                 echo "$CONFIG=$(grep -w "$CONFIG" "$CONFIG_ENV" | head -n 1 | cut -d ":" -f 2)" >> $GITHUB_ENV
@@ -54,7 +55,7 @@ jobs:
       with:
         swap-size-gb: 10
 
-    - name: Setup environment
+    - name: Setup build kernel environment
       run: |
         echo "BUILD_TIME=$(TZ=Asia/Shanghai date "+%Y%m%d%H%M")" >> $GITHUB_ENV
         echo "DEVICE=$(echo ${{ env.KERNEL_CONFIG }} | sed 's!vendor/!!;s/_defconfig//;s/_user//;s/-perf//')" >> $GITHUB_ENV
@@ -65,109 +66,154 @@ jobs:
     - name: Download Toolchains (Clang & GCC)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        # Clang logic
+        
+        # 1. Download Clang (AOSP or Custom)
         if [ "${{ env.USE_CUSTOM_CLANG }}" = "true" ]; then
-            if [[ ${{ env.CUSTOM_CLANG_SOURCE }} == *'.git' ]]; then
-                git clone ${{ env.CUSTOM_CLANG_SOURCE }} -b ${{ env.CUSTOM_CLANG_BRANCH }} clang-aosp --depth=1
+            if echo "${{ env.CUSTOM_CLANG_SOURCE }}" | grep -q ".git"; then
+                git clone "${{ env.CUSTOM_CLANG_SOURCE }}" -b "${{ env.CUSTOM_CLANG_BRANCH }}" clang-aosp --depth=1
             else
-                wget -O clang.tar.gz ${{ env.CUSTOM_CLANG_SOURCE }} && mkdir clang-aosp && tar -C clang-aosp/ -zxvf clang.tar.gz || (unzip clang.tar.gz -d clang-aosp/)
+                wget -O clang.bin "${{ env.CUSTOM_CLANG_SOURCE }}" && mkdir clang-aosp
+                if echo "${{ env.CUSTOM_CLANG_SOURCE }}" | grep -q ".zip"; then
+                    unzip clang.bin -d clang-aosp/
+                else
+                    tar -C clang-aosp/ -zxvf clang.bin || tar -C clang-aosp/ -xvf clang.bin
+                fi
             fi
         else
-            mkdir clang-aosp && wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ env.CLANG_VERSION }}.tar.gz
-            tar -C clang-aosp/ -zxvf clang-${{ env.CLANG_VERSION }}.tar.gz
-        fi
-        
-        # GCC 64 logic
-        if [ "${{ env.ENABLE_GCC_ARM64 }}" = "true" ]; then
-            mkdir gcc-64
-            wget -O gcc64.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
-            tar -C gcc-64/ -zxvf gcc64.tar.gz
-            echo "GCC_64=CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin/aarch64-linux-android-" >> $GITHUB_ENV
+            mkdir clang-aosp
+            wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
+            tar -C clang-aosp/ -zxvf clang.tar.gz
         fi
 
-        # GCC 32 logic
+        # 2. Download GCC 64
+        if [ "${{ env.ENABLE_GCC_ARM64 }}" = "true" ]; then
+            mkdir gcc-64
+            # Cek jika butuh custom GCC 64
+            if [ "${{ env.USE_CUSTOM_GCC_64 }}" = "true" ]; then
+                if echo "${{ env.CUSTOM_GCC_64_SOURCE }}" | grep -q ".git"; then
+                    git clone "${{ env.CUSTOM_GCC_64_SOURCE }}" -b "${{ env.CUSTOM_GCC_64_BRANCH }}" gcc-64 --depth=1
+                else
+                    wget -O gcc64.bin "${{ env.CUSTOM_GCC_64_SOURCE }}"
+                    tar -C gcc-64/ -zxvf gcc64.bin || unzip gcc64.bin -d gcc-64/
+                fi
+                BIN_64="${{ env.CUSTOM_GCC_64_BIN }}"
+            else
+                wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc64.tar.gz
+                tar -C gcc-64/ -zxvf gcc64.tar.gz
+                BIN_64="aarch64-linux-android-"
+            fi
+            echo "GCC_64=CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin/$BIN_64" >> $GITHUB_ENV
+        fi
+
+        # 3. Download GCC 32
         if [ "${{ env.ENABLE_GCC_ARM32 }}" = "true" ]; then
             mkdir gcc-32
-            wget -O gcc32.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
-            tar -C gcc-32/ -zxvf gcc32.tar.gz
-            echo "GCC_32=CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin/arm-linux-androideabi-" >> $GITHUB_ENV
+            if [ "${{ env.USE_CUSTOM_GCC_32 }}" = "true" ]; then
+                if echo "${{ env.CUSTOM_GCC_32_SOURCE }}" | grep -q ".git"; then
+                    git clone "${{ env.CUSTOM_GCC_32_SOURCE }}" -b "${{ env.CUSTOM_GCC_32_BRANCH }}" gcc-32 --depth=1
+                else
+                    wget -O gcc32.bin "${{ env.CUSTOM_GCC_32_SOURCE }}"
+                    tar -C gcc-32/ -zxvf gcc32.bin || unzip gcc32.bin -d gcc-32/
+                fi
+                BIN_32="${{ env.CUSTOM_GCC_32_BIN }}"
+            else
+                wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz -O gcc32.tar.gz
+                tar -C gcc-32/ -zxvf gcc32.tar.gz
+                BIN_32="arm-linux-androideabi-"
+            fi
+            echo "GCC_32=CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin/$BIN_32" >> $GITHUB_ENV
         fi
 
     - name: Download Kernel Source & Tools
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone --recursive ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
-        [ "${{ env.BUILD_BOOT_IMG }}" = "true" ] && git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools -b master-kernel-build-2022 --depth=1
-        [ "${{ env.BUILD_BOOT_IMG }}" = "true" ] && wget -O boot-source.img ${{ env.SOURCE_BOOT_IMAGE }}
+        if [ "${{ env.BUILD_BOOT_IMG }}" = "true" ]; then
+            git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools -b master-kernel-build-2022 --depth=1
+            wget -O boot-source.img ${{ env.SOURCE_BOOT_IMAGE }}
+            if [ -f boot-source.img ]; then
+                echo "FORMAT_MKBOOTING=$(python3 tools/unpack_bootimg.py --boot_img boot-source.img --format mkbootimg)" >> $GITHUB_ENV
+                echo "HAVE_SOURCE_BOOT_IMAGE=true" >> $GITHUB_ENV
+            fi
+        fi
+        [ "${{ env.ADD_LOCALVERSION_TO_FILENAME }}" = "true" ] && echo "LOCALVERSION=$(cat android-kernel/localversion)" >> $GITHUB_ENV || echo "LOCALVERSION=" >> $GITHUB_ENV
 
     - name: Setup KernelSU Next
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s dev
-        mv KernelSU-Next drivers/kernelsu || mv drivers/KernelSU-Next drivers/kernelsu
-        KSU_VERSION=$(cd drivers/kernelsu && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
+        # Penanganan folder hasil setup
+        [ -d "KernelSU-Next" ] && KSU_DIR="KernelSU-Next" || KSU_DIR="drivers/kernelsu"
+        KSU_VERSION=$(cd $KSU_DIR && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
         echo "UPLOADNAME=-KernelSU_Next_$KSU_VERSION" >> $GITHUB_ENV
 
     - name: Setup Configuration & Fixes
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # FIX syscall_fn_t for Kernel 4.9
-        if [ -f "drivers/kernelsu/hook/syscall_hook.h" ]; then
-            sed -i '1i #include <linux/ptrace.h>' drivers/kernelsu/hook/syscall_hook.h
-            sed -i '2i typedef long (*syscall_fn_t)(const struct pt_regs *);' drivers/kernelsu/hook/syscall_hook.h
-        fi
-        # Integrasi Makefile
-        sed -i '/obj-y += kernelsu\//d' drivers/Makefile
-        echo "obj-y += kernelsu/" >> drivers/Makefile
-        # Patch PR_SET_VMA
-        sed -i 's/PR_SET_VMA/PR_SET_VMA_KSU/g' drivers/kernelsu/core/ksu_setup.c || true
         
-        # Defconfig adjustments
+        # 1. FIX syscall_fn_t untuk Rolex (Kernel 4.9)
+        # Cari file syscall_hook.h di folder KSU
+        HOOK_FILE=$(find . -name "syscall_hook.h")
+        if [ ! -z "$HOOK_FILE" ]; then
+            sed -i '1i #include <linux/ptrace.h>' $HOOK_FILE
+            sed -i '2i typedef long (*syscall_fn_t)(const struct pt_regs *);' $HOOK_FILE
+        fi
+
+        # 2. Defconfig adjustments
         CONF="arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}"
-        echo "CONFIG_KSU=y" >> $CONF
+        [ "${{ env.ENABLE_KERNELSU }}" = "true" ] && echo "CONFIG_KSU=y" >> $CONF
         [ "${{ env.ADD_KPROBES_CONFIG }}" = "true" ] && (echo "CONFIG_MODULES=y" >> $CONF; echo "CONFIG_KPROBES=y" >> $CONF; echo "CONFIG_HAVE_KPROBES=y" >> $CONF; echo "CONFIG_KPROBE_EVENTS=y" >> $CONF)
         [ "${{ env.ADD_OVERLAYFS_CONFIG }}" = "true" ] && echo "CONFIG_OVERLAY_FS=y" >> $CONF
         [ "${{ env.DISABLE_CC_WERROR }}" = "true" ] && echo "CONFIG_CC_WERROR=n" >> $CONF
 
     - name: Setup ccache
+      if: env.ENABLE_CCACHE == 'true'
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-${{ env.DEVICE }}${{ env.UPLOADNAME }}
+        key: build-kernel-${{ env.DEVICE }}${{ env.LOCALVERSION }}${{ env.UPLOADNAME }}
         max-size: 2G
 
     - name: Build Kernel
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH
+        # Pastikan environment variabel KSU hash ter-export
+        if [ ! -z "${{ env.KSU_EXPECTED_SIZE }}" ]; then
+            export KSU_EXPECTED_SIZE=${{ env.KSU_EXPECTED_SIZE }}
+            export KSU_EXPECTED_HASH=${{ env.KSU_EXPECTED_HASH }}
+        fi
+        
         make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_CONFIG }}
         make -j$(nproc --all) CC="ccache clang" O=out ARCH=${{ env.ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.GCC_64 }} ${{ env.GCC_32 }}
 
-    - name: Process Boot Image (mkbootimg)
-      if: env.BUILD_BOOT_IMG == 'true'
+    - name: Check Output & Prepare Artifacts
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         IMG="android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }}"
         if [ -f "$IMG" ]; then
-            python3 tools/unpack_bootimg.py --boot_img boot-source.img --out out_boot
-            cp $IMG out_boot/kernel
-            # Ambil argumen asli dari boot-source
-            ARGS=$(python3 tools/unpack_bootimg.py --boot_img boot-source.img --format mkbootimg)
-            python3 tools/mkbootimg.py $ARGS -o boot-ksu.img
+            echo "CHECK_FILE_IS_OK=true" >> $GITHUB_ENV
+            # AnyKernel3 Setup
+            git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AK3
+            cp $IMG AK3/
+            [ "${{ env.NEED_DTBO }}" = "true" ] && cp android-kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img AK3/ || true
+            rm -rf AK3/.git*
+            
+            # Boot Image Setup
+            if [ "${{ env.HAVE_SOURCE_BOOT_IMAGE }}" = "true" ]; then
+                python3 tools/unpack_bootimg.py --boot_img boot-source.img --out out_boot
+                cp $IMG out_boot/kernel
+                python3 tools/mkbootimg.py ${{ env.FORMAT_MKBOOTING }} -o boot-ksu.img
+            fi
+        else
+            echo "Kernel file not found!" && exit 1
         fi
 
-    - name: Prepare AnyKernel3
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AK3
-        cp android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }} AK3/
-        [ -f android-kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img ] && cp android-kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img AK3/
-        rm -rf AK3/.git*
-
-    - name: Upload All Artifacts
+    - name: Upload Results
+      if: env.CHECK_FILE_IS_OK == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: Kernel-Result-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+        name: Kernel-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
         path: |
           kernel_workspace/AK3/*
           kernel_workspace/boot-ksu.img
